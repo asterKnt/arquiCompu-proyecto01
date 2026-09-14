@@ -544,28 +544,35 @@ DRAW_DEC_2DIG PROC NEAR
     PUSH BX
     PUSH CX
     PUSH DX
+    PUSH BP
 
+    MOV BP, DX              ; BP = Coordenada Y original fija (ej: 0)
+
+    ; Dividir AX / 10
     XOR AH, AH
     MOV BL, 10
     DIV BL                  ; AL = decenas, AH = unidades
-    MOV DL, AH              ; DL = unidades
-    PUSH DX                 ; Guardar unidades en la pila
 
-    ; Dibujar decenas
+    PUSH AX                 ; Preservar decenas en AL y unidades en AH
+
+    ; 1. Dibujar decenas
     ADD AL, '0'
+    MOV DX, BP              ; Y fija
     MOV BL, 15              ; Blanco
-    MOV BH, 0               ; Negro
+    MOV BH, 0               ; Fondo negro
     CALL DRAW_CHAR_8X8
 
-    ; Dibujar unidades
-    ADD CX, 8
-    POP DX                  ; DL = unidades
-    MOV AL, DL
+    ; 2. Dibujar unidades
+    POP AX                  ; Recuperar AL=decenas, AH=unidades
+    MOV AL, AH
     ADD AL, '0'
-    MOV BL, 15
-    MOV BH, 0
+    ADD CX, 8               ; Desplazar X en 8 pixeles a la derecha
+    MOV DX, BP              ; Y fija
+    MOV BL, 15              ; Blanco
+    MOV BH, 0               ; Fondo negro
     CALL DRAW_CHAR_8X8
 
+    POP BP
     POP DX
     POP CX
     POP BX
@@ -1551,15 +1558,11 @@ DISPATCH_EDITOR_KEY PROC NEAR
     CMP AL, ' '
     JB  DEK_CHECK_CTRL_CODES
 
-    ; 4. Caracteres imprimibles (32 a 126)
+    ; 4. Caracteres imprimibles (32 a 126, incluye espacios y toda la puntuacion)
     CMP AL, 126
     JA  DEK_RET
 
-    ; Verificar si es puntuacion o alfanumerico
-    CALL IS_ALLOWED_CHAR
-    JNC DEK_RET             ; Si no esta permitido, descartar
-
-    ; Insertar caracter en el buffer
+    ; Insertar caracter en el buffer directamente
     CALL INSERT_CHAR_AT_CURSOR
     RET
 
@@ -1855,8 +1858,20 @@ ICA_NO_SHIFT:
     ; Actualizar longitud de la linea actual (maximo 39)
     MOV SI, CUR_ROW
     SHL SI, 1
-    MOV AX, LINE_LENGTHS[SI]
+    MOV AX, CUR_COL
+    INC AX                      ; Longitud minima requerida tras escribir en CUR_COL
+    CMP AX, LINE_LENGTHS[SI]
+    JBE ICA_LEN_CHECK_SHIFT
+
     CMP AX, 39
+    JBE ICA_SET_LEN
+    MOV AX, 39
+ICA_SET_LEN:
+    MOV LINE_LENGTHS[SI], AX
+    JMP ICA_LEN_CLAMPED
+
+ICA_LEN_CHECK_SHIFT:
+    CMP WORD PTR LINE_LENGTHS[SI], 39
     JAE ICA_LEN_CLAMPED
     INC WORD PTR LINE_LENGTHS[SI]
 ICA_LEN_CLAMPED:
@@ -2064,9 +2079,9 @@ HANDLE_ENTER PROC NEAR
     MUL DX
     MOV DI, AX                     ; DI = (CUR_ROW + 1) * 40 (destino)
 
-    MOV BP, CUR_ROW
-    SHL BP, 1
-    MOV CX, LINE_LENGTHS[BP]       ; Total previo
+    MOV BX, CUR_ROW
+    SHL BX, 1
+    MOV CX, LINE_LENGTHS[BX]       ; Total previo
 
     CMP CUR_COL, CX
     JAE HE_SPLIT_NO_CHARS          ; Nada que mover
@@ -2096,16 +2111,16 @@ HE_SPLIT_NO_CHARS:
 
 HE_SPLIT_DONE:
     ; Asignar longitud a la nueva linea
-    MOV BP, CUR_ROW
-    INC BP
-    SHL BP, 1
-    MOV LINE_LENGTHS[BP], DX
+    MOV BX, CUR_ROW
+    INC BX
+    SHL BX, 1
+    MOV LINE_LENGTHS[BX], DX
 
     ; Acortar longitud de la linea actual a CUR_COL
-    MOV BP, CUR_ROW
-    SHL BP, 1
+    MOV BX, CUR_ROW
+    SHL BX, 1
     MOV AX, CUR_COL
-    MOV LINE_LENGTHS[BP], AX
+    MOV LINE_LENGTHS[BX], AX
 
     ; Mover cursor al inicio de la siguiente linea
     INC CUR_ROW
@@ -2126,6 +2141,7 @@ INSERT_DOC_EMPTY_LINE PROC NEAR
     PUSH DX
     PUSH SI
     PUSH DI
+    PUSH BP
 
     MOV BP, AX                     ; BP = Fila destino que quedara vacia
 
@@ -2191,6 +2207,7 @@ IDEL_FILL_SPACE:
 
     INC DOC_LINE_COUNT
 
+    POP BP
     POP DI
     POP SI
     POP DX
