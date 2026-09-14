@@ -40,7 +40,10 @@ JUMPS
     OLD_VIDEO_MODE      DB ?
     PROGRAM_STATE       DB 0            ; 0 = Menu Principal, 1 = Editor, 2 = Salir
     REDRAW_REQ          DB 1            ; 1 = Requiere repintar pantalla completa
+    FULL_REDRAW_REQ     DB 1            ; 1 = Requiere invalidar y limpiar pantalla completa
     CURSOR_VISIBLE      DB 1            ; Estado del cursor visual
+    CURSOR_VISIBLE_STATE DB 1           ; 1 = Cursor ON, 0 = Cursor OFF (fase de parpadeo)
+    CURSOR_BLINK_PHASE  DB 0FFH         ; Ultima fase detectada del temporizador de BIOS
     MENU_SEL            DB 1            ; Opcion seleccionada en menu (1..3)
 
     ; -----------------------------------------------------------------------
@@ -48,7 +51,7 @@ JUMPS
     ; -----------------------------------------------------------------------
     MAX_LINES           EQU 80          ; Hasta 80 renglones de documento
     MAX_COLS            EQU 40          ; 40 caracteres por renglon (320px / 8px)
-    VISIBLE_ROWS        EQU 23          ; 23 filas visibles en el lienzo (Y: 8..191)
+    VISIBLE_ROWS        EQU 24          ; 24 filas visibles en el lienzo (Y: 8..199)
 
     DOC_LINE_COUNT      DW 1            ; Cantidad total de lineas activas
     CUR_ROW             DW 0            ; Fila actual del cursor en el documento (0..79)
@@ -97,6 +100,24 @@ JUMPS
     SCREEN_Y            DW ?
     ROW_VRAM_OFFSET     DW ?
 
+    ; -----------------------------------------------------------------------
+    ; Variables para Renderizado Diferencial (Shadow Buffer y Cache)
+    ; -----------------------------------------------------------------------
+    PREV_VIEW_START_LINE DW 0FFFFH      ; Deteccion de scroll vertical en viewport
+    PREV_STATUS_LN      DW 0FFFFH       ; Cache de linea para barra superior
+    PREV_STATUS_COL     DW 0FFFFH       ; Cache de columna para barra superior
+    PREV_STATUS_FG      DB 0FFH         ; Cache de color FG en barra superior
+    PREV_STATUS_BG      DB 0FFH         ; Cache de color BG en barra superior
+    CELL_CHANGED_FLAG   DB 0            ; 1 si alguna celda cambio en el ciclo
+    IS_CUR_ROW_FLAG     DB 0            ; 1 si la fila actual de pantalla contiene al cursor
+    DOC_ROW_BASE_OFF    DW 0            ; Offset base de linea de documento
+    SHADOW_ROW_BASE_OFF DW 0            ; Offset base de linea de pantalla
+
+    VISIBLE_CELLS       EQU 960         ; 24 filas * 40 columnas
+    SHADOW_CHARS        DB VISIBLE_CELLS DUP(0FFH)
+    SHADOW_FG           DB VISIBLE_CELLS DUP(0FFH)
+    SHADOW_BG           DB VISIBLE_CELLS DUP(0FFH)
+
     ; Dimensiones originales de las 2 imagenes
     IMG1_W              DW 44           ; Imagen 1: Arch Linux (44x36)
     IMG1_H              DW 36
@@ -139,7 +160,7 @@ JUMPS
     TXT_ERR_OPEN        DB 'Error: Archivo no encontrado o invalido!', 0
     TXT_PRESS_KEY       DB 'Presione cualquier tecla...', 0
 
-    TXT_CHEATSHEET      DB '^S:Guard ^H:Ayuda ^B:Buscar ^I/^J:Img ^M:FG ^N:BG', 0
+    TXT_CHEATSHEET      DB 'Alt: S-Guard H-Ayuda B-Buscar M/N-Color', 0
     TXT_LBL_FILE        DB 'DOC:', 0
     TXT_LBL_LN          DB ' L:', 0
     TXT_LBL_COL         DB ' C:', 0
@@ -266,6 +287,7 @@ MAIN PROC FAR
     MOV AX, @DATA
     MOV DS, AX
     MOV ES, AX
+    CLD
 
     ; Guardar modo de video actual de DOS para restaurarlo al salir
     MOV AH, 0FH
@@ -472,6 +494,7 @@ FILL_RECT PROC NEAR
     PUSH DI
     PUSH ES
     PUSH BP
+    CLD
 
     MOV BX, 0A000H
     MOV ES, BX
@@ -829,9 +852,22 @@ RSI_KEY_LOOP:
     MOV AH, 00H
     INT 16H
 
-    ; Alt+Z (Scan Code 2Ch) -> Cancelar
+    ; Alt+Z (Scan Code 2Ch) o Ctrl+Z (AL=1Ah) -> Cancelar solo si es atajo real
     CMP AH, 2CH
     JNE RSI_CHK_ENTER
+    CMP AL, 0
+    JE  RSI_CANCEL
+    CMP AL, 1AH             ; Ctrl+Z
+    JE  RSI_CANCEL
+    PUSH AX
+    MOV AH, 02H
+    INT 16H
+    TEST AL, 08H            ; Alt sostenido
+    POP AX
+    JNZ RSI_CANCEL
+    JMP RSI_CHK_ENTER
+
+RSI_CANCEL:
     MOV AX, 0FFFFH
     RET
 
@@ -941,6 +977,7 @@ FCN_COPY_NAME:
     ; Pasar a pantalla de edicion
     MOV PROGRAM_STATE, 1
     MOV REDRAW_REQ, 1
+    MOV FULL_REDRAW_REQ, 1
     RET
 
 FCN_ERROR:
@@ -1032,8 +1069,16 @@ FOF_COPY_NAME:
     INT 21H
 
     ; Ingresar a la pantalla de edicion
+    MOV CUR_ROW, 0
+    MOV CUR_COL, 0
+    MOV VIEW_START_LINE, 0
+    MOV CUR_FG_IDX, 0
+    MOV CUR_BG_IDX, 0
+    MOV CURSOR_VISIBLE_STATE, 1
+    MOV CURSOR_BLINK_PHASE, 0FFH
     MOV PROGRAM_STATE, 1
     MOV REDRAW_REQ, 1
+    MOV FULL_REDRAW_REQ, 1
     RET
 
 FOF_READ_ERROR:
@@ -1116,6 +1161,10 @@ RESET_DOCUMENT_BUFFER PROC NEAR
     MOV CUR_COL, 0
     MOV VIEW_START_LINE, 0
     MOV PLACED_COUNT, 0
+    MOV CUR_FG_IDX, 0
+    MOV CUR_BG_IDX, 0
+    MOV CURSOR_VISIBLE_STATE, 1
+    MOV CURSOR_BLINK_PHASE, 0FFH
 
     ; Rellenar todo el buffer de texto con espacios
     XOR BX, BX
@@ -1403,18 +1452,75 @@ LOAD_BINARY_DOCUMENT ENDP
 ; ===========================================================================
 
 RUN_EDITOR_CYCLE PROC NEAR
+    ; 1. Verificar si hay peticion de redibujado forzado o scroll de pantalla
+    CMP FULL_REDRAW_REQ, 1
+    JE  REC_DO_REDRAW
     CMP REDRAW_REQ, 1
-    JNE REC_CHECK_KEY
-    CALL REDRAW_EDITOR_SCREEN
-    MOV REDRAW_REQ, 0
+    JE  REC_DO_REDRAW
+    MOV AX, VIEW_START_LINE
+    CMP AX, PREV_VIEW_START_LINE
+    JE  REC_CHECK_KEY
+
+REC_DO_REDRAW:
+    MOV FULL_REDRAW_REQ, 1
+    CALL UPDATE_EDITOR_DISPLAY
 
 REC_CHECK_KEY:
-    ; Leer tecla sin bloqueo o con INT 16h
+    ; 2. Consultar si hay tecla lista en el buffer de teclado (sin bloqueo)
+    MOV AH, 01H
+    INT 16H
+    JNZ REC_KEY_AVAILABLE
+
+    ; --- ESTADO INACTIVO (IDLE): CONTROL DE PARPADEO DEL CURSOR ---
+    ; Leer contador de ticks del reloj de BIOS (INT 1Ah, AH=00h)
+    ; DX retorna los 16 bits bajos del contador de ticks (~18.2 ticks por segundo)
+    MOV AH, 00H
+    INT 1AH
+
+    ; El bit 3 de DX conmuta aproximadamente cada 8 ticks (~440 ms = ~1.14 Hz)
+    MOV AL, DL
+    AND AL, 08H
+    CMP AL, CURSOR_BLINK_PHASE
+    JE  REC_IDLE_YIELD       ; Mantiene la misma fase de parpadeo
+
+    ; Cambio de fase: alternar visibilidad del cursor
+    MOV CURSOR_BLINK_PHASE, AL
+    XOR CURSOR_VISIBLE_STATE, 1
+    ; Actualizar pantalla diferencialmente (solo se redibujara la celda del cursor)
+    CALL UPDATE_EDITOR_DISPLAY
+    RET
+
+REC_IDLE_YIELD:
+    ; Liberar ciclos de CPU en DOSBox esperando a la siguiente interrupcion de hardware
+    STI
+    HLT
+    RET
+
+REC_KEY_AVAILABLE:
+    ; --- TECLA PRESIONADA ---
+    ; Extraer la tecla del buffer del BIOS (AH = Scan Code, AL = ASCII)
     MOV AH, 00H
     INT 16H
 
-    ; Despachar segun tipo de tecla (ASCII o Escaneo Extendido)
+    ; Preservar el codigo de tecla en AX
+    PUSH AX
+
+    ; Sincronizar fase de parpadeo con el reloj y garantizar cursor visible
+    MOV AH, 00H
+    INT 1AH
+    MOV AL, DL
+    AND AL, 08H
+    MOV CURSOR_BLINK_PHASE, AL
+    MOV CURSOR_VISIBLE_STATE, 1
+
+    ; Recuperar la tecla para ser procesada
+    POP AX
+
+    ; Despachar la accion de la tecla
     CALL DISPATCH_EDITOR_KEY
+
+    ; Actualizar pantalla diferencialmente de inmediato
+    CALL UPDATE_EDITOR_DISPLAY
     RET
 RUN_EDITOR_CYCLE ENDP
 
@@ -1422,22 +1528,30 @@ RUN_EDITOR_CYCLE ENDP
 ; DISPATCH_EDITOR_KEY: Manejo completo de atajos Alt, flechas, Enter y Backspace
 ; ---------------------------------------------------------------------------
 DISPATCH_EDITOR_KEY PROC NEAR
-    ; 1. Verificar atajos extendidos de la tecla Alt (AL=0 o AL=E0h)
+    ; 1. Consultar banderas de teclas especiales (Shift / Alt / Ctrl)
+    PUSH AX
+    MOV AH, 02H
+    INT 16H
+    MOV BL, AL              ; BL = Shift flags (bit 3=Alt, bit 2=Ctrl)
+    POP AX
+
+    ; Si la tecla Alt (08h) o Ctrl (04h) esta presionada, procesar atajo directamente
+    TEST BL, 08H
+    JNZ DEK_CHECK_ALT_OR_ARROWS
+    TEST BL, 04H
+    JNZ DEK_CHECK_ALT_OR_ARROWS
+
+    ; 2. Verificar teclas extendidas de BIOS (AL=0 o AL=E0h)
     CMP AL, 0
     JE  DEK_CHECK_ALT_OR_ARROWS
     CMP AL, 0E0H
     JE  DEK_CHECK_ALT_OR_ARROWS
 
-    ; 2. Teclas de edicion basica
-    CMP AL, 08H             ; Backspace
-    JE  DEK_BKSP
-    CMP AL, 0DH             ; Enter
-    JE  DEK_ENTER
-
-    ; 3. Entrada de texto regular (Alfanumericos y puntuacion permitida)
-    ; Permitidos: 'A'..'Z', 'a'..'z', '0'..'9', espacio, '"', ',', '.', ':'
+    ; 3. Caracteres de control (< 32 / espacio)
     CMP AL, ' '
-    JB  DEK_CHECK_ALT_OR_ARROWS
+    JB  DEK_CHECK_CTRL_CODES
+
+    ; 4. Caracteres imprimibles (32 a 126)
     CMP AL, 126
     JA  DEK_RET
 
@@ -1449,6 +1563,15 @@ DISPATCH_EDITOR_KEY PROC NEAR
     CALL INSERT_CHAR_AT_CURSOR
     RET
 
+DEK_CHECK_CTRL_CODES:
+    CMP AL, 08H             ; Backspace normal
+    JE  DEK_BKSP
+    CMP AL, 0DH             ; Enter normal
+    JE  DEK_ENTER
+
+    ; Si es otro codigo de control ASCII (^S, ^B, ^I, ^J, ^M, ^N, etc.), verificar atajo
+    JMP DEK_CHECK_ALT_OR_ARROWS
+
 DEK_BKSP:
     CALL HANDLE_BACKSPACE
     RET
@@ -1458,7 +1581,7 @@ DEK_ENTER:
     RET
 
 DEK_CHECK_ALT_OR_ARROWS:
-    ; Flechas de direccion
+    ; Flechas de direccion (Escaneos 48h, 50h, 4Bh, 4Dh)
     CMP AH, 48H             ; Flecha Arriba
     JE  DEK_ARROW_UP
     CMP AH, 50H             ; Flecha Abajo
@@ -1468,27 +1591,57 @@ DEK_CHECK_ALT_OR_ARROWS:
     CMP AH, 4DH             ; Flecha Derecha
     JE  DEK_ARROW_RIGHT
 
-    ; Atajos Alt del Editor
-    CMP AH, 2EH             ; Alt+C: Centrar cursor en linea actual
-    JE  DEK_ALT_C
-    CMP AH, 16H             ; Alt+U: Cursor a primera linea
-    JE  DEK_ALT_U
-    CMP AH, 20H             ; Alt+D: Cursor a ultima linea
-    JE  DEK_ALT_D
-    CMP AH, 1FH             ; Alt+S: Guardar y salir
+    ; Atajos Alt / Ctrl del Editor (Por Scan Code de tecla o ASCII de control)
+    CMP AH, 1FH             ; S: Alt+S o Ctrl+S -> Guardar y salir
     JE  DEK_ALT_S
-    CMP AH, 32H             ; Alt+M: Ciclar color de fuente (FG)
-    JE  DEK_ALT_M
-    CMP AH, 31H             ; Alt+N: Ciclar color de fondo (BG)
-    JE  DEK_ALT_N
-    CMP AH, 17H             ; Alt+I: Insertar Imagen 1
-    JE  DEK_ALT_I
-    CMP AH, 24H             ; Alt+J: Insertar Imagen 2
-    JE  DEK_ALT_J
-    CMP AH, 30H             ; Alt+B: Buscar y Reemplazar
-    JE  DEK_ALT_B
-    CMP AH, 23H             ; Alt+H: Ventana de Ayuda
+    CMP AL, 13H             ; Ctrl+S
+    JE  DEK_ALT_S
+
+    CMP AH, 2DH             ; X: Alt+X o Ctrl+X -> Guardar y salir
+    JE  DEK_ALT_S
+    CMP AL, 18H             ; Ctrl+X
+    JE  DEK_ALT_S
+
+    CMP AH, 23H             ; H: Alt+H o Ctrl+H -> Ayuda
     JE  DEK_ALT_H
+
+    CMP AH, 30H             ; B: Alt+B o Ctrl+B -> Buscar y Reemplazar
+    JE  DEK_ALT_B
+    CMP AL, 02H             ; Ctrl+B
+    JE  DEK_ALT_B
+
+    CMP AH, 17H             ; I: Alt+I o Ctrl+I -> Insertar Imagen 1
+    JE  DEK_ALT_I
+    CMP AL, 09H             ; Ctrl+I (Tab)
+    JE  DEK_ALT_I
+
+    CMP AH, 24H             ; J: Alt+J o Ctrl+J -> Insertar Imagen 2
+    JE  DEK_ALT_J
+    CMP AL, 0AH             ; Ctrl+J
+    JE  DEK_ALT_J
+
+    CMP AH, 2EH             ; C: Alt+C o Ctrl+C -> Centrar cursor en renglon
+    JE  DEK_ALT_C
+    CMP AL, 03H             ; Ctrl+C
+    JE  DEK_ALT_C
+
+    CMP AH, 16H             ; U: Alt+U o Ctrl+U -> Cursor a primera linea
+    JE  DEK_ALT_U
+    CMP AL, 15H             ; Ctrl+U
+    JE  DEK_ALT_U
+
+    CMP AH, 20H             ; D: Alt+D o Ctrl+D -> Cursor a ultima linea
+    JE  DEK_ALT_D
+    CMP AL, 04H             ; Ctrl+D
+    JE  DEK_ALT_D
+
+    CMP AH, 32H             ; M: Alt+M o Ctrl+M -> Ciclar color de fuente (FG)
+    JE  DEK_ALT_M
+
+    CMP AH, 31H             ; N: Alt+N o Ctrl+N -> Ciclar color de fondo (BG)
+    JE  DEK_ALT_N
+    CMP AL, 0EH             ; Ctrl+N
+    JE  DEK_ALT_N
 
 DEK_RET:
     RET
@@ -1586,24 +1739,73 @@ IAC_YES:
 IS_ALLOWED_CHAR ENDP
 
 ; ---------------------------------------------------------------------------
-; INSERT_CHAR_AT_CURSOR: Insercion estilo nano con desplazamiento a la derecha
+; INSERT_CHAR_AT_CURSOR: Insercion estilo nano con auto-wrap garantizado
 ; ---------------------------------------------------------------------------
 INSERT_CHAR_AT_CURSOR PROC NEAR
     PUSH AX
-    ; Validar que la linea actual no sobrepase el limite de 40 caracteres
+
+    ; 1. Si CUR_COL ya esta en o supera la columna 39, hacer wrap antes de insertar
+    CMP CUR_COL, 39
+    JB  ICA_CHECK_ROW_FULL
+
+    ; Descender a siguiente linea
+    MOV AX, CUR_ROW
+    INC AX
+    CMP AX, MAX_LINES
+    JAE ICA_RET                 ; Limite maximo de lineas alcanzado
+
+    CMP AX, DOC_LINE_COUNT
+    JB  ICA_DO_WRAP_EXISTING
+
+    CALL INSERT_DOC_EMPTY_LINE
+    JMP ICA_DO_WRAP_NEW
+
+ICA_DO_WRAP_EXISTING:
+    NOP
+
+ICA_DO_WRAP_NEW:
+    INC CUR_ROW
+    MOV CUR_COL, 0
+
+ICA_CHECK_ROW_FULL:
+    ; 2. Validar si la linea actual ya tiene 39 o mas caracteres
     MOV SI, CUR_ROW
     SHL SI, 1
     MOV CX, LINE_LENGTHS[SI]
-    CMP CX, MAX_COLS
-    JAE ICA_RET             ; Renglon lleno
+    CMP CX, 39
+    JB  ICA_HAVE_ROOM
 
-    ; Calcular offset base de la linea: CUR_ROW * MAX_COLS
+    ; Linea llena: pasar a siguiente linea
+    MOV AX, CUR_ROW
+    INC AX
+    CMP AX, MAX_LINES
+    JAE ICA_RET
+
+    CMP AX, DOC_LINE_COUNT
+    JB  ICA_FULL_EXISTING
+
+    CALL INSERT_DOC_EMPTY_LINE
+    JMP ICA_FULL_NEW
+
+ICA_FULL_EXISTING:
+    NOP
+
+ICA_FULL_NEW:
+    INC CUR_ROW
+    MOV CUR_COL, 0
+
+ICA_HAVE_ROOM:
+    ; 3. Offset base de la fila = CUR_ROW * MAX_COLS (40)
     MOV AX, CUR_ROW
     MOV DX, MAX_COLS
     MUL DX
-    MOV DI, AX              ; DI = Offset base de la fila
+    MOV DI, AX                  ; DI = Offset base de la fila
 
-    ; Desplazar caracteres desde CX hasta CUR_COL hacia la derecha
+    ; 4. Si el cursor esta en medio del texto, desplazar hacia la derecha
+    MOV SI, CUR_ROW
+    SHL SI, 1
+    MOV CX, LINE_LENGTHS[SI]
+
     CMP CX, CUR_COL
     JBE ICA_NO_SHIFT
 
@@ -1611,7 +1813,10 @@ INSERT_CHAR_AT_CURSOR PROC NEAR
 ICA_SHIFT_LOOP:
     MOV SI, DI
     ADD SI, CX
-    DEC SI                  ; SI = DI + CX - 1
+    DEC SI                      ; SI = DI + CX - 1
+
+    CMP CX, 39
+    JAE ICA_SHIFT_SKIP
 
     MOV DL, DOC_CHARS[SI]
     MOV DOC_CHARS[SI+1], DL
@@ -1622,44 +1827,70 @@ ICA_SHIFT_LOOP:
     MOV DL, DOC_BG[SI]
     MOV DOC_BG[SI+1], DL
 
+ICA_SHIFT_SKIP:
     DEC CX
     CMP CX, CUR_COL
     JA  ICA_SHIFT_LOOP
     POP CX
 
 ICA_NO_SHIFT:
-    ; Insertar caracter y sus atributos activos
-    POP AX                  ; Recuperar caracter a insertar
+    ; 5. Insertar caracter y atributos de color
+    POP AX                      ; Recuperar caracter a insertar
     PUSH AX
     MOV SI, DI
     ADD SI, CUR_COL
     MOV DOC_CHARS[SI], AL
 
-    ; Asignar color de fuente activo
+    ; Color de fuente
     XOR BX, BX
     MOV BL, CUR_FG_IDX
     MOV DL, FG_COLORS[BX]
     MOV DOC_FG[SI], DL
 
-    ; Asignar color de fondo activo
+    ; Color de fondo
     MOV BL, CUR_BG_IDX
     MOV DL, BG_COLORS[BX]
     MOV DOC_BG[SI], DL
 
-    ; Incrementar longitud de la linea actual
+    ; Actualizar longitud de la linea actual (maximo 39)
     MOV SI, CUR_ROW
     SHL SI, 1
-    INC LINE_LENGTHS[SI]
+    MOV AX, LINE_LENGTHS[SI]
+    CMP AX, 39
+    JAE ICA_LEN_CLAMPED
+    INC WORD PTR LINE_LENGTHS[SI]
+ICA_LEN_CLAMPED:
 
-    ; Avanzar cursor a la derecha
+    ; 6. Avanzar cursor a la derecha
     INC CUR_COL
-    CMP CUR_COL, MAX_COLS
+    CMP CUR_COL, 39
     JB  ICA_DONE
-    MOV CUR_COL, MAX_COLS - 1
+
+    ; Auto-wrap automatico al alcanzar la columna 39:
+    ; Pasa directamente a la siguiente fila en columna 0
+    MOV AX, CUR_ROW
+    INC AX
+    CMP AX, MAX_LINES
+    JAE ICA_WRAP_CLAMP
+
+    CMP AX, DOC_LINE_COUNT
+    JB  ICA_NEXT_EXISTING
+
+    CALL INSERT_DOC_EMPTY_LINE
+    INC CUR_ROW
+    MOV CUR_COL, 0
+    JMP ICA_DONE
+
+ICA_NEXT_EXISTING:
+    INC CUR_ROW
+    MOV CUR_COL, 0
+    JMP ICA_DONE
+
+ICA_WRAP_CLAMP:
+    MOV CUR_COL, 38
 
 ICA_DONE:
     CALL ADJUST_VIEWPORT
-    MOV REDRAW_REQ, 1
 
 ICA_RET:
     POP AX
@@ -1705,7 +1936,6 @@ HB_SHIFT_LEFT:
 
 HB_PAD_ONE_SPACE:
     MOV DOC_CHARS[DI], ' '
-    MOV REDRAW_REQ, 1
     RET
 
 HB_CHECK_LINE_MERGE:
@@ -1778,6 +2008,10 @@ HB_MERGE_COPIED:
     ; Posicionar cursor donde inicio la fusion
     DEC CUR_ROW
     SUB DX, CX
+    CMP DX, 39
+    JB  HB_SET_DX
+    MOV DX, 38
+HB_SET_DX:
     MOV CUR_COL, DX
 
     ; Eliminar linea actual del buffer y subir las siguientes
@@ -1786,7 +2020,6 @@ HB_MERGE_COPIED:
     CALL DELETE_DOC_LINE
 
     CALL ADJUST_VIEWPORT
-    MOV REDRAW_REQ, 1
     RET
 
 HB_MOVE_TO_PREV_END:
@@ -1794,9 +2027,12 @@ HB_MOVE_TO_PREV_END:
     MOV SI, CUR_ROW
     SHL SI, 1
     MOV AX, LINE_LENGTHS[SI]
+    CMP AX, 39
+    JB  HB_SET_AX
+    MOV AX, 38
+HB_SET_AX:
     MOV CUR_COL, AX
     CALL ADJUST_VIEWPORT
-    MOV REDRAW_REQ, 1
 
 HB_DONE:
     RET
@@ -1875,7 +2111,6 @@ HE_SPLIT_DONE:
     INC CUR_ROW
     MOV CUR_COL, 0
     CALL ADJUST_VIEWPORT
-    MOV REDRAW_REQ, 1
 
 HE_RET:
     RET
@@ -2074,12 +2309,15 @@ MOVE_CURSOR_UP PROC NEAR
     MOV SI, CUR_ROW
     SHL SI, 1
     MOV AX, LINE_LENGTHS[SI]
+    CMP AX, 39
+    JB  MCU_CHK_MAX
+    MOV AX, 38
+MCU_CHK_MAX:
     CMP CUR_COL, AX
     JBE MCU_ADJ
     MOV CUR_COL, AX
 MCU_ADJ:
     CALL ADJUST_VIEWPORT
-    MOV REDRAW_REQ, 1
 MCU_RET:
     RET
 MOVE_CURSOR_UP ENDP
@@ -2093,12 +2331,15 @@ MOVE_CURSOR_DOWN PROC NEAR
     MOV SI, CUR_ROW
     SHL SI, 1
     MOV AX, LINE_LENGTHS[SI]
+    CMP AX, 39
+    JB  MCD_CHK_MAX
+    MOV AX, 38
+MCD_CHK_MAX:
     CMP CUR_COL, AX
     JBE MCD_ADJ
     MOV CUR_COL, AX
 MCD_ADJ:
     CALL ADJUST_VIEWPORT
-    MOV REDRAW_REQ, 1
 MCD_RET:
     RET
 MOVE_CURSOR_DOWN ENDP
@@ -2107,7 +2348,6 @@ MOVE_CURSOR_LEFT PROC NEAR
     CMP CUR_COL, 0
     JE  MCL_WRAP
     DEC CUR_COL
-    MOV REDRAW_REQ, 1
     RET
 MCL_WRAP:
     CMP CUR_ROW, 0
@@ -2116,9 +2356,12 @@ MCL_WRAP:
     MOV SI, CUR_ROW
     SHL SI, 1
     MOV AX, LINE_LENGTHS[SI]
+    CMP AX, 39
+    JB  MCL_CHK_MAX
+    MOV AX, 38
+MCL_CHK_MAX:
     MOV CUR_COL, AX
     CALL ADJUST_VIEWPORT
-    MOV REDRAW_REQ, 1
 MCL_RET:
     RET
 MOVE_CURSOR_LEFT ENDP
@@ -2130,17 +2373,26 @@ MOVE_CURSOR_RIGHT PROC NEAR
     CMP CUR_COL, AX
     JAE MCR_WRAP
     INC CUR_COL
-    MOV REDRAW_REQ, 1
+    CMP CUR_COL, 39
+    JAE MCR_WRAP
     RET
+
 MCR_WRAP:
-    MOV AX, DOC_LINE_COUNT
-    DEC AX
-    CMP CUR_ROW, AX
+    ; Avanzar al siguiente renglon en columna 0
+    MOV AX, CUR_ROW
+    INC AX
+    CMP AX, MAX_LINES
     JAE MCR_RET
+
+    CMP AX, DOC_LINE_COUNT
+    JB  MCR_NEXT_EXISTS
+
+    CALL INSERT_DOC_EMPTY_LINE
+
+MCR_NEXT_EXISTS:
     INC CUR_ROW
     MOV CUR_COL, 0
     CALL ADJUST_VIEWPORT
-    MOV REDRAW_REQ, 1
 MCR_RET:
     RET
 MOVE_CURSOR_RIGHT ENDP
@@ -2155,8 +2407,11 @@ ACTION_CENTER_CURSOR PROC NEAR
     SHL SI, 1
     MOV AX, LINE_LENGTHS[SI]
     SHR AX, 1
+    CMP AX, 39
+    JB  ACC_OK
+    MOV AX, 38
+ACC_OK:
     MOV CUR_COL, AX
-    MOV REDRAW_REQ, 1
     RET
 ACTION_CENTER_CURSOR ENDP
 
@@ -2165,7 +2420,6 @@ ACTION_GOTO_FIRST_LINE PROC NEAR
     MOV CUR_ROW, 0
     MOV CUR_COL, 0
     MOV VIEW_START_LINE, 0
-    MOV REDRAW_REQ, 1
     RET
 ACTION_GOTO_FIRST_LINE ENDP
 
@@ -2176,7 +2430,6 @@ ACTION_GOTO_LAST_LINE PROC NEAR
     MOV CUR_ROW, AX
     MOV CUR_COL, 0
     CALL ADJUST_VIEWPORT
-    MOV REDRAW_REQ, 1
     RET
 ACTION_GOTO_LAST_LINE ENDP
 
@@ -2187,7 +2440,6 @@ ACTION_CYCLE_FG PROC NEAR
     JB  ACF_OK
     MOV CUR_FG_IDX, 0
 ACF_OK:
-    MOV REDRAW_REQ, 1
     RET
 ACTION_CYCLE_FG ENDP
 
@@ -2198,7 +2450,6 @@ ACTION_CYCLE_BG PROC NEAR
     JB  ACB_OK
     MOV CUR_BG_IDX, 0
 ACB_OK:
-    MOV REDRAW_REQ, 1
     RET
 ACTION_CYCLE_BG ENDP
 
@@ -2249,7 +2500,7 @@ INSERT_IMAGE_AT_DOC_POS PROC NEAR
     MOV BYTE PTR [DI+6], 0  ; Rot = 0
 
     INC PLACED_COUNT
-    MOV REDRAW_REQ, 1
+    MOV FULL_REDRAW_REQ, 1
     RET
 
 IIA_FULL:
@@ -2269,7 +2520,7 @@ ACTION_SHOW_HELP PROC NEAR
     CALL DRAW_HELP_WINDOW
     MOV AH, 00H
     INT 16H
-    MOV REDRAW_REQ, 1
+    MOV FULL_REDRAW_REQ, 1
     RET
 ACTION_SHOW_HELP ENDP
 
@@ -2471,7 +2722,7 @@ ASR_CP2:
 
 ASR_CANCEL:
     MOV FORCE_UPPER, 1      ; Restaurar modo mayusculas por defecto
-    MOV REDRAW_REQ, 1
+    MOV FULL_REDRAW_REQ, 1
     RET
 ACTION_SEARCH_REPLACE ENDP
 
@@ -2622,12 +2873,23 @@ ESR_RET:
 EXECUTE_SEARCH_REPLACE ENDP
 
 ; ===========================================================================
-; RENDERIZADO COMPLETO DEL EDITOR (VIEWPORT, TEXTO, IMAGENES Y BARRAS)
+; RENDERIZADO DIFERENCIAL Y PARPADEO DE CURSOR EN EL LIENZO (MODO 13H)
 ; ===========================================================================
 
+; ---------------------------------------------------------------------------
+; REDRAW_EDITOR_SCREEN: Forzar redibujado completo e invalidacion de pantalla
+; ---------------------------------------------------------------------------
 REDRAW_EDITOR_SCREEN PROC NEAR
-    ; 1. Limpiar pantalla completa
-    ; Barra superior: Y 0..7 (Negro)
+    MOV FULL_REDRAW_REQ, 1
+    CALL UPDATE_EDITOR_DISPLAY
+    RET
+REDRAW_EDITOR_SCREEN ENDP
+
+; ---------------------------------------------------------------------------
+; INVALIDATE_AND_CLEAR_SCREEN: Limpia VRAM y fuerza recarga de buffers sombra
+; ---------------------------------------------------------------------------
+INVALIDATE_AND_CLEAR_SCREEN PROC NEAR
+    ; 1. Limpiar Barra Superior: Y 0..7 (Negro)
     MOV CX, 0
     MOV DX, 0
     MOV SI, 320
@@ -2635,108 +2897,45 @@ REDRAW_EDITOR_SCREEN PROC NEAR
     MOV AL, 0
     CALL FILL_RECT
 
-    ; Lienzo de edicion: Y 8..191 (Color de fondo de celda por defecto = 0)
+    ; 2. Limpiar Lienzo de Edicion: Y 8..199 (192 pixeles = 24 filas)
     MOV CX, 0
     MOV DX, 8
     MOV SI, 320
-    MOV BP, 184
+    MOV BP, 192
     MOV AL, 0
     CALL FILL_RECT
 
-    ; Barra inferior: Y 192..199 (Negro)
-    MOV CX, 0
-    MOV DX, 192
-    MOV SI, 320
-    MOV BP, 8
-    MOV AL, 0
-    CALL FILL_RECT
-
-    ; 2. Renderizar texto del Viewport (Lineas VIEW_START_LINE a VIEW_START_LINE + 22)
-    XOR BP, BP              ; BP = Fila relativa en pantalla (0..22)
-RES_TEXT_ROWS:
-    CMP BP, VISIBLE_ROWS
-    JAE RES_DRAW_IMAGES
-
-    MOV AX, VIEW_START_LINE
-    ADD AX, BP
-    CMP AX, DOC_LINE_COUNT
-    JAE RES_DRAW_IMAGES     ; Fin de lineas del documento
-
-    ; Guardar variables de linea y fila
-    MOV DRAW_LINE_ABS, AX
-
-    ; Y de pantalla: DX = 8 + BP * 8
-    MOV DX, BP
-    SHL DX, 3
-    ADD DX, 8
-    MOV DRAW_ROW_Y, DX
-
-    ; Offset base en matrices = DRAW_LINE_ABS * 40
-    MOV AX, DRAW_LINE_ABS
-    MOV BX, MAX_COLS
-    MUL BX
-    MOV DI, AX              ; DI = Offset base
-
-    PUSH BP                 ; Preservar indice de fila en pantalla
-
-    ; Renderizar las 40 columnas de la fila
-    XOR CX, CX              ; CX = Columna de texto (0..39)
-RES_COLS_LOOP:
-    CMP CX, MAX_COLS
-    JAE RES_NEXT_TEXT_ROW
-
-    ; Coordenada X = CX * 8
-    MOV AX, CX
-    SHL AX, 3
-    MOV BX, AX              ; BX = Screen X
-
-    ; Leer datos de la celda
-    MOV SI, DI
-    ADD SI, CX
-    MOV AL, DOC_CHARS[SI]
-    MOV DL, DOC_FG[SI]
-    MOV DH, DOC_BG[SI]
-
-    ; Si la celda es cursor activo, destacar cursor
-    MOV SI, DRAW_LINE_ABS
-    CMP SI, CUR_ROW
-    JNE RES_DRAW_GLYPH
-    CMP CX, CUR_COL
-    JNE RES_DRAW_GLYPH
-
-    ; Cursor activo: invertir colores para maximo contraste
-    MOV AH, DL
-    MOV DL, DH
-    MOV DH, AH
-    CMP DH, 0
-    JNE RES_DRAW_GLYPH
-    MOV DH, 14              ; Fondo amarillo si era negro
-
-RES_DRAW_GLYPH:
-    PUSH CX
+    ; 3. Invalidar todos los buffers sombra con 0FFh (960 celdas)
+    PUSH ES
     PUSH DI
-    MOV CX, BX              ; Screen X
-    MOV DX, DRAW_ROW_Y      ; Screen Y
-    MOV BL, DL              ; Color FG
-    MOV BH, DH              ; Color BG
-    CALL DRAW_CHAR_8X8
+    MOV AX, DS
+    MOV ES, AX
+    CLD
+    MOV AL, 0FFH
+
+    LEA DI, SHADOW_CHARS
+    MOV CX, VISIBLE_CELLS
+    REP STOSB
+
+    LEA DI, SHADOW_FG
+    MOV CX, VISIBLE_CELLS
+    REP STOSB
+
+    LEA DI, SHADOW_BG
+    MOV CX, VISIBLE_CELLS
+    REP STOSB
+
     POP DI
-    POP CX
+    POP ES
 
-    INC CX
-    JMP RES_COLS_LOOP
+    ; 4. Invalidar estado de la barra superior
+    MOV PREV_STATUS_LN, 0FFFFH
+    MOV PREV_STATUS_COL, 0FFFFH
+    MOV PREV_STATUS_FG, 0FFH
+    MOV PREV_STATUS_BG, 0FFH
 
-RES_NEXT_TEXT_ROW:
-    POP BP
-    INC BP
-    JMP RES_TEXT_ROWS
-
-RES_DRAW_IMAGES:
-    ; 3. Renderizar imagenes Pixel Art sobre el texto (Prioridad absoluta)
-    CALL DRAW_PLACED_IMAGES_OVER_TEXT
-
-    ; 4. Renderizar Barra Superior de Estado (Fila 0)
-    ; Nombre de archivo
+    ; 5. Renderizar elementos estaticos de la barra superior (Fila 0)
+    ; Etiqueta DOC:
     MOV CX, 4
     MOV DX, 0
     LEA SI, TXT_LBL_FILE
@@ -2744,6 +2943,7 @@ RES_DRAW_IMAGES:
     MOV BH, 0
     CALL DRAW_STRING_8X8
 
+    ; Nombre de archivo
     MOV CX, 36
     MOV DX, 0
     LEA SI, CURRENT_FILENAME
@@ -2751,7 +2951,7 @@ RES_DRAW_IMAGES:
     MOV BH, 0
     CALL DRAW_STRING_8X8
 
-    ; Indicador de Linea
+    ; Etiqueta L:
     MOV CX, 150
     MOV DX, 0
     LEA SI, TXT_LBL_LN
@@ -2759,13 +2959,7 @@ RES_DRAW_IMAGES:
     MOV BH, 0
     CALL DRAW_STRING_8X8
 
-    MOV AX, CUR_ROW
-    INC AX
-    MOV CX, 178
-    MOV DX, 0
-    CALL DRAW_DEC_2DIG
-
-    ; Indicador de Columna
+    ; Etiqueta C:
     MOV CX, 198
     MOV DX, 0
     LEA SI, TXT_LBL_COL
@@ -2773,13 +2967,7 @@ RES_DRAW_IMAGES:
     MOV BH, 0
     CALL DRAW_STRING_8X8
 
-    MOV AX, CUR_COL
-    INC AX
-    MOV CX, 226
-    MOV DX, 0
-    CALL DRAW_DEC_2DIG
-
-    ; Indicador de Color FG activo
+    ; Etiqueta FG:
     MOV CX, 246
     MOV DX, 0
     LEA SI, TXT_LBL_FG
@@ -2787,17 +2975,7 @@ RES_DRAW_IMAGES:
     MOV BH, 0
     CALL DRAW_STRING_8X8
 
-    ; Muestra visual del color FG
-    MOV CX, 272
-    MOV DX, 1
-    MOV SI, 8
-    MOV BP, 6
-    XOR BX, BX
-    MOV BL, CUR_FG_IDX
-    MOV AL, FG_COLORS[BX]
-    CALL FILL_RECT
-
-    ; Indicador de Color BG activo
+    ; Etiqueta BG:
     MOV CX, 284
     MOV DX, 0
     LEA SI, TXT_LBL_BG
@@ -2805,25 +2983,230 @@ RES_DRAW_IMAGES:
     MOV BH, 0
     CALL DRAW_STRING_8X8
 
+    RET
+INVALIDATE_AND_CLEAR_SCREEN ENDP
+
+; ---------------------------------------------------------------------------
+; UPDATE_EDITOR_DISPLAY: Actualizacion selectiva y diferencial de celdas
+; ---------------------------------------------------------------------------
+UPDATE_EDITOR_DISPLAY PROC NEAR
+    ; 1. Verificar si hay peticion de invalidacion total o scroll de viewport
+    CMP FULL_REDRAW_REQ, 1
+    JE  UED_DO_FULL
+    CMP REDRAW_REQ, 1
+    JE  UED_DO_FULL
+    MOV AX, VIEW_START_LINE
+    CMP AX, PREV_VIEW_START_LINE
+    JE  UED_DIFF_SCAN
+
+UED_DO_FULL:
+    CALL INVALIDATE_AND_CLEAR_SCREEN
+    MOV FULL_REDRAW_REQ, 0
+    MOV REDRAW_REQ, 0
+    MOV AX, VIEW_START_LINE
+    MOV PREV_VIEW_START_LINE, AX
+
+UED_DIFF_SCAN:
+    MOV CELL_CHANGED_FLAG, 0
+
+    ; Recorrer las 24 filas visibles (BP = 0..23)
+    XOR BP, BP
+UED_ROW_LOOP:
+    CMP BP, VISIBLE_ROWS
+    JB  UED_ROW_CONTINUE
+    JMP UED_ROWS_DONE
+
+UED_ROW_CONTINUE:
+    ; Fila absoluta del documento: AX = VIEW_START_LINE + BP
+    MOV AX, VIEW_START_LINE
+    ADD AX, BP
+    MOV DRAW_LINE_ABS, AX
+
+    ; Coordenada Y en pixeles: DX = 8 + BP * 8
+    MOV DX, BP
+    SHL DX, 3
+    ADD DX, 8
+    MOV DRAW_ROW_Y, DX
+
+    ; Base en documento: AX = DRAW_LINE_ABS * 40
+    MOV AX, DRAW_LINE_ABS
+    MOV BX, MAX_COLS
+    MUL BX
+    MOV DOC_ROW_BASE_OFF, AX
+
+    ; Base en buffer sombra: AX = BP * 40
+    MOV AX, BP
+    MOV BX, MAX_COLS
+    MUL BX
+    MOV SHADOW_ROW_BASE_OFF, AX
+
+    ; Determinar si esta fila visible contiene al cursor
+    MOV IS_CUR_ROW_FLAG, 0
+    MOV AX, DRAW_LINE_ABS
+    CMP AX, CUR_ROW
+    JNE UED_START_COLS
+    MOV IS_CUR_ROW_FLAG, 1
+
+UED_START_COLS:
+    ; Recorrer las 40 columnas (0..39)
+    XOR CX, CX
+UED_COL_LOOP:
+    CMP CX, MAX_COLS
+    JB  UED_COL_CONTINUE
+    JMP UED_NEXT_ROW
+
+UED_COL_CONTINUE:
+    ; DI = Offset en buffer sombra (SHADOW_ROW_BASE_OFF + CX)
+    MOV DI, SHADOW_ROW_BASE_OFF
+    ADD DI, CX
+
+    ; Obtener datos deseados para la celda
+    MOV AX, DRAW_LINE_ABS
+    CMP AX, DOC_LINE_COUNT
+    JAE UED_EMPTY_CELL
+
+    ; Celda con texto dentro del documento
+    MOV SI, DOC_ROW_BASE_OFF
+    ADD SI, CX
+    MOV AL, DOC_CHARS[SI]
+    MOV DL, DOC_FG[SI]
+    MOV DH, DOC_BG[SI]
+    JMP UED_CHECK_CURSOR
+
+UED_EMPTY_CELL:
+    MOV AL, ' '
+    MOV DL, 7
+    MOV DH, 0
+
+UED_CHECK_CURSOR:
+    ; Verificar si el cursor esta activo en esta celda
+    CMP CURSOR_VISIBLE_STATE, 1
+    JNE UED_COMPARE_SHADOW
+    CMP IS_CUR_ROW_FLAG, 1
+    JNE UED_COMPARE_SHADOW
+    CMP CX, CUR_COL
+    JNE UED_COMPARE_SHADOW
+
+    ; Cursor activo visible: bloque amarillo brillante con letra en negro
+    MOV DL, 0               ; Color de letra negro
+    MOV DH, 14              ; Fondo amarillo brillante
+
+UED_COMPARE_SHADOW:
+    ; Comparar deseado (AL, DL, DH) contra el buffer sombra
+    CMP AL, SHADOW_CHARS[DI]
+    JNE UED_DRAW_CELL
+    CMP DL, SHADOW_FG[DI]
+    JNE UED_DRAW_CELL
+    CMP DH, SHADOW_BG[DI]
+    JE  UED_NEXT_COL        ; Coincide exactamente: no escribir en VRAM
+
+UED_DRAW_CELL:
+    ; Guardar nuevo contenido en buffer sombra
+    MOV SHADOW_CHARS[DI], AL
+    MOV SHADOW_FG[DI], DL
+    MOV SHADOW_BG[DI], DH
+    MOV CELL_CHANGED_FLAG, 1
+
+    PUSH CX
+    PUSH DX
+    PUSH BP
+    PUSH DI
+
+    ; Colores: BL = Color de fuente (DL), BH = Color de fondo (DH)
+    MOV BX, DX
+
+    ; Coordenada X de pantalla: CX = Columna * 8
+    SHL CX, 3
+
+    ; Coordenada Y de pantalla: DX = DRAW_ROW_Y
+    MOV DX, DRAW_ROW_Y
+
+    CALL DRAW_CHAR_8X8
+
+    POP DI
+    POP BP
+    POP DX
+    POP CX
+
+UED_NEXT_COL:
+    INC CX
+    JMP UED_COL_LOOP
+
+UED_NEXT_ROW:
+    INC BP
+    JMP UED_ROW_LOOP
+
+UED_ROWS_DONE:
+    ; Redibujar imagenes sobre el texto si alguna celda cambio o si hay imagenes activas
+    CMP PLACED_COUNT, 0
+    JE  UED_UPDATE_STATUS
+    CMP CELL_CHANGED_FLAG, 1
+    JNE UED_UPDATE_STATUS
+    CALL DRAW_PLACED_IMAGES_OVER_TEXT
+
+UED_UPDATE_STATUS:
+    CALL UPDATE_STATUS_BAR_DIFF
+    RET
+UPDATE_EDITOR_DISPLAY ENDP
+
+; ---------------------------------------------------------------------------
+; UPDATE_STATUS_BAR_DIFF: Redibuja selectivamente solo los indicadores cambiados
+; ---------------------------------------------------------------------------
+UPDATE_STATUS_BAR_DIFF PROC NEAR
+    ; 1. Indicador de Linea (Ln: XX)
+    MOV AX, CUR_ROW
+    CMP AX, PREV_STATUS_LN
+    JE  USBD_CHK_COL
+    MOV PREV_STATUS_LN, AX
+    INC AX                  ; Mostrar 1-based
+    MOV CX, 178
+    MOV DX, 0
+    CALL DRAW_DEC_2DIG
+
+USBD_CHK_COL:
+    ; 2. Indicador de Columna (Col: XX)
+    MOV AX, CUR_COL
+    CMP AX, PREV_STATUS_COL
+    JE  USBD_CHK_FG
+    MOV PREV_STATUS_COL, AX
+    INC AX                  ; Mostrar 1-based
+    MOV CX, 226
+    MOV DX, 0
+    CALL DRAW_DEC_2DIG
+
+USBD_CHK_FG:
+    ; 3. Muestra de color FG
+    MOV AL, CUR_FG_IDX
+    CMP AL, PREV_STATUS_FG
+    JE  USBD_CHK_BG
+    MOV PREV_STATUS_FG, AL
+    MOV CX, 272
+    MOV DX, 1
+    MOV SI, 8
+    MOV BP, 6
+    XOR BX, BX
+    MOV BL, AL
+    MOV AL, FG_COLORS[BX]
+    CALL FILL_RECT
+
+USBD_CHK_BG:
+    ; 4. Muestra de color BG
+    MOV AL, CUR_BG_IDX
+    CMP AL, PREV_STATUS_BG
+    JE  USBD_DONE
+    MOV PREV_STATUS_BG, AL
     MOV CX, 308
     MOV DX, 1
     MOV SI, 8
     MOV BP, 6
     XOR BX, BX
-    MOV BL, CUR_BG_IDX
+    MOV BL, AL
     MOV AL, BG_COLORS[BX]
     CALL FILL_RECT
 
-    ; 5. Renderizar Barra Inferior Cheatsheet (Fila 24)
-    MOV CX, 4
-    MOV DX, 192
-    LEA SI, TXT_CHEATSHEET
-    MOV BL, 11              ; Cian claro
-    MOV BH, 0
-    CALL DRAW_STRING_8X8
-
+USBD_DONE:
     RET
-REDRAW_EDITOR_SCREEN ENDP
+UPDATE_STATUS_BAR_DIFF ENDP
 
 ; ---------------------------------------------------------------------------
 ; DRAW_PLACED_IMAGES_OVER_TEXT: Renderiza cada imagen estampada con transformaciones
