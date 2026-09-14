@@ -165,25 +165,29 @@ JUMPS
     TXT_ERR_OPEN        DB 'Error: Archivo no encontrado o invalido!', 0
     TXT_PRESS_KEY       DB 'Presione cualquier tecla...', 0
 
-    TXT_CHEATSHEET      DB 'Alt: S-Guard H-Ayuda B-Buscar M/N-Color', 0
     TXT_LBL_FILE        DB 'DOC:', 0
     TXT_LBL_LN          DB ' L:', 0
     TXT_LBL_COL         DB ' C:', 0
     TXT_LBL_FG          DB ' FG:', 0
     TXT_LBL_BG          DB ' BG:', 0
 
-    TXT_HELP_T          DB '=== AYUDA - ATAJOS DE TECLADO ===', 0
-    TXT_H_C             DB 'Alt+C: Centrar cursor en renglon', 0
-    TXT_H_U             DB 'Alt+U: Ir al primer renglon del doc', 0
-    TXT_H_D             DB 'Alt+D: Ir al ultimo renglon del doc', 0
-    TXT_H_S             DB 'Alt+S: Guardar en disco y salir', 0
-    TXT_H_M             DB 'Alt+M: Alternar color de letra (FG)', 0
-    TXT_H_N             DB 'Alt+N: Alternar color de fondo (BG)', 0
-    TXT_H_I             DB 'Alt+I: Insertar Imagen 1 (Arch)', 0
-    TXT_H_J             DB 'Alt+J: Insertar Imagen 2 (Honkai)', 0
-    TXT_H_B             DB 'Alt+B: Buscar y Reemplazar texto', 0
-    TXT_H_H             DB 'Alt+H: Mostrar esta ayuda', 0
-    TXT_H_ED            DB 'Flechas: Moverse | Enter: Salto | BS: Borrar', 0
+    ; Cadenas de la Ventana de Ayuda Categorizada
+    TXT_HELP_T          DB '--- AYUDA: ATAJOS DE TECLADO ---', 0
+    TXT_H_SEC1          DB '[ NAVEGACION Y CURSOR ]', 0
+    TXT_H_C             DB 'Alt+C    : Centrar cursor en linea', 0
+    TXT_H_U             DB 'Alt+U    : Ir al primer renglon', 0
+    TXT_H_D             DB 'Alt+D    : Ir al ultimo renglon', 0
+    TXT_H_NAV           DB 'Flechas  : Moverse | BS: Borrar', 0
+
+    TXT_H_SEC2          DB '[ FORMATO Y PIXEL ART ]', 0
+    TXT_H_M             DB 'Alt+M    : Color de texto (FG)', 0
+    TXT_H_N             DB 'Alt+N    : Color de fondo (BG)', 0
+    TXT_H_IMG           DB 'Alt+I/J  : Menu Pixel Art (4 img)', 0
+
+    TXT_H_SEC3          DB '[ SISTEMA Y ARCHIVO ]', 0
+    TXT_H_B             DB 'Alt+B    : Buscar y reemplazar', 0
+    TXT_H_S             DB 'Alt+S    : Guardar y salir al DOS', 0
+    TXT_H_RET           DB '[ Presione una tecla para volver ]', 0
 
     TXT_SR_TITLE        DB 'BUSCAR Y REEMPLAZAR', 0
     TXT_SR_PROMPT_F     DB 'Buscar palabra: ', 0
@@ -1653,36 +1657,11 @@ DEK_CHECK_ALT_OR_ARROWS:
     CMP AH, 4DH             ; Flecha Derecha
     JE  DEK_ARROW_RIGHT
 
-    ; Atajos Alt / Ctrl del Editor (Por Scan Code de tecla o ASCII de control)
-    CMP AH, 1FH             ; S: Alt+S o Ctrl+S -> Guardar y salir
-    JE  DEK_ALT_S
-    CMP AL, 13H             ; Ctrl+S
-    JE  DEK_ALT_S
-
-    CMP AH, 2DH             ; X: Alt+X o Ctrl+X -> Guardar y salir
-    JE  DEK_ALT_S
-    CMP AL, 18H             ; Ctrl+X
-    JE  DEK_ALT_S
-
-    CMP AH, 23H             ; H: Alt+H o Ctrl+H -> Ayuda
-    JE  DEK_ALT_H
-
-    CMP AH, 30H             ; B: Alt+B o Ctrl+B -> Buscar y Reemplazar
-    JE  DEK_ALT_B
-    CMP AL, 02H             ; Ctrl+B
-    JE  DEK_ALT_B
-
-    CMP AH, 17H             ; I: Alt+I o Ctrl+I -> Insertar Imagen 1
-    JE  DEK_ALT_I
-    CMP AL, 09H             ; Ctrl+I (Tab)
-    JE  DEK_ALT_I
-
-    CMP AH, 24H             ; J: Alt+J o Ctrl+J -> Insertar Imagen 2
-    JE  DEK_ALT_J
-    CMP AL, 0AH             ; Ctrl+J
-    JE  DEK_ALT_J
-
-    CMP AH, 2EH             ; C: Alt+C o Ctrl+C -> Centrar cursor en renglon
+    ; -----------------------------------------------------------------------
+    ; Atajos de Teclado Organizados por Categoria (Alt y Ctrl)
+    ; -----------------------------------------------------------------------
+    ; 1. NAVEGACION Y CURSOR
+    CMP AH, 2EH             ; C: Alt+C o Ctrl+C -> Centrar cursor en linea
     JE  DEK_ALT_C
     CMP AL, 03H             ; Ctrl+C
     JE  DEK_ALT_C
@@ -1697,7 +1676,8 @@ DEK_CHECK_ALT_OR_ARROWS:
     CMP AL, 04H             ; Ctrl+D
     JE  DEK_ALT_D
 
-    CMP AH, 32H             ; M: Alt+M o Ctrl+M -> Ciclar color de fuente (FG)
+    ; 2. FORMATO Y PIXEL ART
+    CMP AH, 32H             ; M: Alt+M o Ctrl+M -> Ciclar color de texto (FG)
     JE  DEK_ALT_M
 
     CMP AH, 31H             ; N: Alt+N o Ctrl+N -> Ciclar color de fondo (BG)
@@ -1705,10 +1685,39 @@ DEK_CHECK_ALT_OR_ARROWS:
     CMP AL, 0EH             ; Ctrl+N
     JE  DEK_ALT_N
 
+    CMP AH, 17H             ; I: Alt+I o Ctrl+I -> Menu Pixel Art
+    JE  DEK_ALT_IMG
+    CMP AL, 09H             ; Ctrl+I (Tab)
+    JE  DEK_ALT_IMG
+
+    CMP AH, 24H             ; J: Alt+J o Ctrl+J -> Menu Pixel Art (Alias unificado)
+    JE  DEK_ALT_IMG
+    CMP AL, 0AH             ; Ctrl+J
+    JE  DEK_ALT_IMG
+
+    ; 3. SISTEMA Y ARCHIVO
+    CMP AH, 30H             ; B: Alt+B o Ctrl+B -> Buscar y Reemplazar
+    JE  DEK_ALT_B
+    CMP AL, 02H             ; Ctrl+B
+    JE  DEK_ALT_B
+
+    CMP AH, 23H             ; H: Alt+H -> Mostrar ventana de ayuda
+    JE  DEK_ALT_H
+
+    CMP AH, 1FH             ; S: Alt+S o Ctrl+S -> Guardar y salir
+    JE  DEK_ALT_S
+    CMP AL, 13H             ; Ctrl+S
+    JE  DEK_ALT_S
+
+    CMP AH, 2DH             ; X: Alt+X o Ctrl+X -> Guardar y salir (Alias DOS)
+    JE  DEK_ALT_S
+    CMP AL, 18H             ; Ctrl+X
+    JE  DEK_ALT_S
+
 DEK_RET:
     RET
 
-; Despachos directos
+; Despachos directos organizados
 DEK_ARROW_UP:
     CALL MOVE_CURSOR_UP
     RET
@@ -1722,6 +1731,7 @@ DEK_ARROW_RIGHT:
     CALL MOVE_CURSOR_RIGHT
     RET
 
+; Navegacion
 DEK_ALT_C:
     CALL ACTION_CENTER_CURSOR
     RET
@@ -1731,26 +1741,27 @@ DEK_ALT_U:
 DEK_ALT_D:
     CALL ACTION_GOTO_LAST_LINE
     RET
-DEK_ALT_S:
-    CALL ACTION_SAVE_AND_EXIT
-    RET
+
+; Formato y Pixel Art
 DEK_ALT_M:
     CALL ACTION_CYCLE_FG
     RET
 DEK_ALT_N:
     CALL ACTION_CYCLE_BG
     RET
-DEK_ALT_I:
-    CALL ACTION_INSERT_IMG1
+DEK_ALT_IMG:
+    CALL ACTION_OPEN_IMAGE_MENU
     RET
-DEK_ALT_J:
-    CALL ACTION_INSERT_IMG2
-    RET
+
+; Sistema y Archivo
 DEK_ALT_B:
     CALL ACTION_SEARCH_REPLACE
     RET
 DEK_ALT_H:
     CALL ACTION_SHOW_HELP
+    RET
+DEK_ALT_S:
+    CALL ACTION_SAVE_AND_EXIT
     RET
 DISPATCH_EDITOR_KEY ENDP
 
@@ -2529,18 +2540,6 @@ ACB_OK:
     RET
 ACTION_CYCLE_BG ENDP
 
-ACTION_INSERT_IMG1 PROC NEAR
-    ; Alt+I: Abrir menu interactivo de seleccion de imagenes Pixel Art
-    CALL ACTION_OPEN_IMAGE_MENU
-    RET
-ACTION_INSERT_IMG1 ENDP
-
-ACTION_INSERT_IMG2 PROC NEAR
-    ; Alt+J: Abrir menu interactivo de seleccion de imagenes Pixel Art
-    CALL ACTION_OPEN_IMAGE_MENU
-    RET
-ACTION_INSERT_IMG2 ENDP
-
 ; ---------------------------------------------------------------------------
 ; ACTION_OPEN_IMAGE_MENU: Menu modal interactivo para elegir imagen Pixel Art
 ; ---------------------------------------------------------------------------
@@ -2741,77 +2740,90 @@ DRAW_HELP_WINDOW PROC NEAR
     MOV AL, 0               ; Interior negro
     CALL FILL_RECT
 
-    ; Titulo
-    MOV CX, 28
-    MOV DX, 24
+    ; 1. Titulo de la ayuda
+    MOV CX, 32
+    MOV DX, 22
     LEA SI, TXT_HELP_T
-    MOV BL, 14
+    MOV BL, 14              ; Amarillo brillante
     MOV BH, 0
     CALL DRAW_STRING_8X8
 
-    ; Lista de atajos
+    ; 2. Seccion 1: Navegacion y Cursor
     MOV CX, 22
-    MOV DX, 40
+    MOV DX, 35
+    LEA SI, TXT_H_SEC1
+    MOV BL, 11              ; Cian
+    MOV BH, 0
+    CALL DRAW_STRING_8X8
+
+    MOV CX, 24
+    MOV DX, 45
     LEA SI, TXT_H_C
-    MOV BL, 15
-    MOV BH, 0
+    MOV BL, 15              ; Blanco
     CALL DRAW_STRING_8X8
 
-    MOV CX, 22
-    MOV DX, 50
+    MOV CX, 24
+    MOV DX, 55
     LEA SI, TXT_H_U
     CALL DRAW_STRING_8X8
 
-    MOV CX, 22
-    MOV DX, 60
+    MOV CX, 24
+    MOV DX, 65
     LEA SI, TXT_H_D
     CALL DRAW_STRING_8X8
 
-    MOV CX, 22
-    MOV DX, 70
-    LEA SI, TXT_H_S
+    MOV CX, 24
+    MOV DX, 75
+    LEA SI, TXT_H_NAV
+    MOV BL, 7               ; Gris claro
     CALL DRAW_STRING_8X8
 
+    ; 3. Seccion 2: Formato y Pixel Art
     MOV CX, 22
-    MOV DX, 80
+    MOV DX, 88
+    LEA SI, TXT_H_SEC2
+    MOV BL, 11              ; Cian
+    CALL DRAW_STRING_8X8
+
+    MOV CX, 24
+    MOV DX, 98
     LEA SI, TXT_H_M
+    MOV BL, 15              ; Blanco
     CALL DRAW_STRING_8X8
 
-    MOV CX, 22
-    MOV DX, 90
+    MOV CX, 24
+    MOV DX, 108
     LEA SI, TXT_H_N
     CALL DRAW_STRING_8X8
 
-    MOV CX, 22
-    MOV DX, 100
-    LEA SI, TXT_H_I
+    MOV CX, 24
+    MOV DX, 118
+    LEA SI, TXT_H_IMG
     CALL DRAW_STRING_8X8
 
+    ; 4. Seccion 3: Sistema y Archivo
     MOV CX, 22
-    MOV DX, 110
-    LEA SI, TXT_H_J
-    CALL DRAW_STRING_8X8
-
-    MOV CX, 22
-    MOV DX, 120
-    LEA SI, TXT_H_B
-    CALL DRAW_STRING_8X8
-
-    MOV CX, 22
-    MOV DX, 130
-    LEA SI, TXT_H_H
-    CALL DRAW_STRING_8X8
-
-    MOV CX, 22
-    MOV DX, 142
-    LEA SI, TXT_H_ED
-    MOV BL, 10              ; Verde
-    CALL DRAW_STRING_8X8
-
-    MOV CX, 22
-    MOV DX, 156
-    LEA SI, TXT_PRESS_KEY
+    MOV DX, 131
+    LEA SI, TXT_H_SEC3
     MOV BL, 11              ; Cian
+    CALL DRAW_STRING_8X8
+
+    MOV CX, 24
+    MOV DX, 141
+    LEA SI, TXT_H_B
+    MOV BL, 15              ; Blanco
+    CALL DRAW_STRING_8X8
+
+    MOV CX, 24
+    MOV DX, 151
+    LEA SI, TXT_H_S
+    CALL DRAW_STRING_8X8
+
+    ; 5. Mensaje de retorno
+    MOV CX, 24
+    MOV DX, 163
+    LEA SI, TXT_H_RET
+    MOV BL, 10              ; Verde claro
     CALL DRAW_STRING_8X8
 
     RET
