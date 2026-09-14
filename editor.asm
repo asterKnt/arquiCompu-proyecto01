@@ -99,6 +99,7 @@ JUMPS
     SCREEN_X            DW ?
     SCREEN_Y            DW ?
     ROW_VRAM_OFFSET     DW ?
+    DRAW_TRANS_COLOR    DB 48
 
     ; -----------------------------------------------------------------------
     ; Variables para Renderizado Diferencial (Shadow Buffer y Cache)
@@ -118,11 +119,15 @@ JUMPS
     SHADOW_FG           DB VISIBLE_CELLS DUP(0FFH)
     SHADOW_BG           DB VISIBLE_CELLS DUP(0FFH)
 
-    ; Dimensiones originales de las 2 imagenes
+    ; Dimensiones originales de las imagenes
     IMG1_W              DW 44           ; Imagen 1: Arch Linux (44x36)
     IMG1_H              DW 36
     IMG2_W              DW 50           ; Imagen 2: Honkai (50x48)
     IMG2_H              DW 48
+    IMG3_W              DW 12           ; Imagen 3: Personaje 1 (12x18)
+    IMG3_H              DW 18
+    IMG4_W              DW 14           ; Imagen 4: Personaje 2 (14x20)
+    IMG4_H              DW 20
 
     ; -----------------------------------------------------------------------
     ; Archivos y Persistencia en Disco
@@ -183,6 +188,12 @@ JUMPS
     TXT_SR_TITLE        DB 'BUSCAR Y REEMPLAZAR', 0
     TXT_SR_PROMPT_F     DB 'Buscar palabra: ', 0
     TXT_SR_PROMPT_R     DB 'Reemplazar por: ', 0
+    TXT_IMG_MENU_T      DB 'SELECCIONAR IMAGEN PIXEL ART', 0
+    TXT_IMG_OPT1        DB '  [1] Arch Linux  (44x36)', 0
+    TXT_IMG_OPT2        DB '  [2] Honkai Star (50x48)', 0
+    TXT_IMG_OPT3        DB '  [3] Personaje 1 (12x18)', 0
+    TXT_IMG_OPT4        DB '  [4] Personaje 2 (14x20)', 0
+    TXT_IMG_HINT        DB '[1-4] Elegir   [Alt+Z/Esc] Salir', 0
 
     ; -----------------------------------------------------------------------
     ; Matrices de Pixeles de las Imagenes (Color 48 = Transparente)
@@ -274,6 +285,54 @@ JUMPS
     db 48,48,48,48,48,48,48,48,48,48,48,48,48,48,48,48,48,48,48,48,48,48,48,48,48,48,48,48,48,48,48,48,48,48,48,48,48,48,48,48,48,48,48,48,48,48,48,48,48,48
     db 48,48,48,48,48,48,48,48,48,48,48,48,48,48,48,48,48,48,48,48,48,48,48,48,48,48,48,48,48,48,48,48,48,48,48,48,48,48,48,48,48,48,48,48,48,48,48,48,48,48
     db 48,48,48,48,48,48,48,48,48,48,48,48,48,48,48,48,48,48,48,48,48,48,48,48,48,48,48,48,48,48,48,48,48,48,48,48,48,48,48,48,48,48,48,48,48,48,48,48,48,48
+
+    ; -----------------------------------------------------------------------
+    ; Imagen 3: Personaje 1 (12x18) - perso1
+    ; -----------------------------------------------------------------------
+    IMG3_DATA LABEL BYTE
+    db 0,0,9,9,9,9,9,9,9,9,0,0
+    db 0,0,9,9,9,9,9,9,9,9,0,0
+    db 9,9,9,9,9,9,9,9,9,9,9,9
+    db 0,0,15,15,15,15,15,15,15,15,0,0
+    db 0,0,15,0,15,15,0,15,15,15,0,0
+    db 0,0,15,15,15,15,15,15,15,15,0,0
+    db 0,0,15,0,0,0,0,15,15,15,0,0
+    db 15,15,15,15,15,15,15,15,15,15,15,15
+    db 15,9,9,15,15,15,15,15,15,15,15,15
+    db 15,9,9,15,15,15,15,15,15,15,15,15
+    db 15,15,15,15,15,15,15,9,9,15,15,15
+    db 15,15,15,15,15,15,15,9,9,15,15,15
+    db 15,15,15,15,15,15,15,15,15,15,15,15
+    db 0,0,15,15,0,0,15,15,0,0,0,0
+    db 0,0,15,15,0,0,0,0,15,15,0,0
+    db 0,0,15,15,0,0,0,0,15,15,0,0
+    db 0,0,9,9,0,0,0,0,9,9,0,0
+    db 0,0,9,9,0,0,0,0,9,9,0,0
+
+    ; -----------------------------------------------------------------------
+    ; Imagen 4: Personaje 2 (14x20) - perso2
+    ; -----------------------------------------------------------------------
+    IMG4_DATA LABEL BYTE
+    db 0,0,0,9,9,9,9,0,0,0,0,0,0,0
+    db 0,0,0,9,9,9,9,0,0,0,0,0,0,0
+    db 0,0,0,9,9,9,9,0,0,0,0,0,0,0
+    db 0,0,0,9,9,9,9,0,0,0,0,0,0,0
+    db 0,9,9,9,9,9,9,9,9,9,0,0,0,0
+    db 0,9,9,15,0,15,0,15,9,9,0,0,0,0
+    db 0,9,9,15,0,0,0,15,9,9,0,0,0,0
+    db 0,9,9,15,15,15,15,15,9,9,0,0,0,0
+    db 0,9,9,0,15,15,15,0,9,9,0,0,0,0
+    db 0,9,9,0,0,15,0,0,9,9,0,0,0,0
+    db 15,15,15,9,9,9,9,9,9,9,0,0,0,0
+    db 15,15,15,9,9,9,9,9,9,9,15,15,15,0
+    db 15,15,15,9,9,9,9,9,9,9,15,15,15,0
+    db 0,0,0,9,9,9,9,9,9,9,15,15,15,0
+    db 0,0,0,9,9,9,9,9,9,9,0,0,0,0
+    db 0,0,0,9,9,9,9,9,9,9,0,0,0,0
+    db 0,0,0,9,9,9,9,9,9,9,0,0,0,0
+    db 0,0,0,15,15,0,0,0,15,15,0,0,0,0
+    db 0,0,0,15,15,0,0,0,0,0,0,0,0,0
+    db 0,0,0,15,15,0,0,0,0,0,0,0,0,0
 
 ; ===========================================================================
 ; SEGMENTO DE CODIGO
@@ -2471,19 +2530,130 @@ ACB_OK:
 ACTION_CYCLE_BG ENDP
 
 ACTION_INSERT_IMG1 PROC NEAR
-    ; Alt+I: Insertar Imagen Pixel Art 1 (Arch Linux) en coordenadas del cursor
-    MOV AL, 1
-    CALL INSERT_IMAGE_AT_DOC_POS
+    ; Alt+I: Abrir menu interactivo de seleccion de imagenes Pixel Art
+    CALL ACTION_OPEN_IMAGE_MENU
     RET
 ACTION_INSERT_IMG1 ENDP
 
 ACTION_INSERT_IMG2 PROC NEAR
-    ; Alt+J: Insertar Imagen Pixel Art 2 (Honkai) en coordenadas del cursor
-    MOV AL, 2
-    CALL INSERT_IMAGE_AT_DOC_POS
+    ; Alt+J: Abrir menu interactivo de seleccion de imagenes Pixel Art
+    CALL ACTION_OPEN_IMAGE_MENU
     RET
 ACTION_INSERT_IMG2 ENDP
 
+; ---------------------------------------------------------------------------
+; ACTION_OPEN_IMAGE_MENU: Menu modal interactivo para elegir imagen Pixel Art
+; ---------------------------------------------------------------------------
+ACTION_OPEN_IMAGE_MENU PROC NEAR
+    ; 1. Dibujar ventana modal centrada
+    CALL DRAW_FILE_DIALOG_BOX
+
+    ; 2. Titulo
+    MOV CX, 36
+    MOV DX, 68
+    LEA SI, TXT_IMG_MENU_T
+    MOV BL, 14              ; Amarillo
+    MOV BH, 0
+    CALL DRAW_STRING_8X8
+
+    ; 3. Opcion 1: Arch Linux
+    MOV CX, 40
+    MOV DX, 82
+    LEA SI, TXT_IMG_OPT1
+    MOV BL, 11              ; Cian
+    MOV BH, 0
+    CALL DRAW_STRING_8X8
+
+    ; 4. Opcion 2: Honkai
+    MOV CX, 40
+    MOV DX, 94
+    LEA SI, TXT_IMG_OPT2
+    MOV BL, 13              ; Magenta
+    MOV BH, 0
+    CALL DRAW_STRING_8X8
+
+    ; 5. Opcion 3: Personaje 1
+    MOV CX, 40
+    MOV DX, 106
+    LEA SI, TXT_IMG_OPT3
+    MOV BL, 10              ; Verde claro
+    MOV BH, 0
+    CALL DRAW_STRING_8X8
+
+    ; 6. Opcion 4: Personaje 2
+    MOV CX, 40
+    MOV DX, 118
+    LEA SI, TXT_IMG_OPT4
+    MOV BL, 9               ; Azul claro
+    MOV BH, 0
+    CALL DRAW_STRING_8X8
+
+    ; 7. Instrucciones
+    MOV CX, 26
+    MOV DX, 136
+    LEA SI, TXT_IMG_HINT
+    MOV BL, 7               ; Gris claro
+    MOV BH, 0
+    CALL DRAW_STRING_8X8
+
+AOIM_KEY_LOOP:
+    MOV AH, 00H
+    INT 16H
+
+    ; Si presiona '1': Insertar Imagen 1
+    CMP AL, '1'
+    JE  AOIM_CHOOSE_1
+
+    ; Si presiona '2': Insertar Imagen 2
+    CMP AL, '2'
+    JE  AOIM_CHOOSE_2
+
+    ; Si presiona '3': Insertar Imagen 3
+    CMP AL, '3'
+    JE  AOIM_CHOOSE_3
+
+    ; Si presiona '4': Insertar Imagen 4
+    CMP AL, '4'
+    JE  AOIM_CHOOSE_4
+
+    ; Cancelar con Esc (1Bh), Alt+Z (AH=2Ch) o Ctrl+Z (AL=1Ah)
+    CMP AL, 1BH
+    JE  AOIM_CANCEL
+    CMP AH, 2CH
+    JE  AOIM_CANCEL
+    CMP AL, 1AH
+    JE  AOIM_CANCEL
+
+    JMP AOIM_KEY_LOOP
+
+AOIM_CHOOSE_1:
+    MOV AL, 1
+    CALL INSERT_IMAGE_AT_DOC_POS
+    JMP AOIM_CANCEL
+
+AOIM_CHOOSE_2:
+    MOV AL, 2
+    CALL INSERT_IMAGE_AT_DOC_POS
+    JMP AOIM_CANCEL
+
+AOIM_CHOOSE_3:
+    MOV AL, 3
+    CALL INSERT_IMAGE_AT_DOC_POS
+    JMP AOIM_CANCEL
+
+AOIM_CHOOSE_4:
+    MOV AL, 4
+    CALL INSERT_IMAGE_AT_DOC_POS
+    JMP AOIM_CANCEL
+
+AOIM_CANCEL:
+    MOV FULL_REDRAW_REQ, 1
+    RET
+ACTION_OPEN_IMAGE_MENU ENDP
+
+; ---------------------------------------------------------------------------
+; INSERT_IMAGE_AT_DOC_POS: Estampa imagen en las coordenadas actuales del cursor
+; ---------------------------------------------------------------------------
 INSERT_IMAGE_AT_DOC_POS PROC NEAR
     ; AL = ID (1 o 2)
     PUSH AX
@@ -2491,7 +2661,14 @@ INSERT_IMAGE_AT_DOC_POS PROC NEAR
     CMP AX, MAX_PLACED
     JAE IIA_FULL
 
-    ; Coordenadas absolutas de pixeles en el documento:
+    ; 1. Calcular offset en PLACED_TABLE (PLACED_COUNT * ENTRY_SIZE)
+    ; Se ejecuta antes del calculo de coordenadas para no sobreescribir DX con el producto
+    MOV BX, ENTRY_SIZE
+    MUL BX
+    LEA DI, PLACED_TABLE
+    ADD DI, AX
+
+    ; 2. Coordenadas absolutas en pixeles del documento en la posicion del cursor:
     ; X = CUR_COL * 8
     ; Y = CUR_ROW * 8
     MOV AX, CUR_COL
@@ -2502,17 +2679,10 @@ INSERT_IMAGE_AT_DOC_POS PROC NEAR
     SHL AX, 3
     MOV DX, AX
 
-    ; Offset = PLACED_COUNT * ENTRY_SIZE
-    MOV AX, PLACED_COUNT
-    MOV BX, ENTRY_SIZE
-    MUL BX
-    LEA DI, PLACED_TABLE
-    ADD DI, AX
-
     POP AX                  ; Recuperar ID
     MOV [DI], AL
-    MOV [DI+1], CX          ; X
-    MOV [DI+3], DX          ; Y
+    MOV [DI+1], CX          ; doc_X
+    MOV [DI+3], DX          ; doc_Y
     MOV BYTE PTR [DI+5], 0  ; Flip = 0
     MOV BYTE PTR [DI+6], 0  ; Rot = 0
 
@@ -3287,11 +3457,29 @@ GET_IMG_INFO PROC NEAR
     LEA SI, IMG1_DATA
     MOV BX, IMG1_W
     MOV DX, IMG1_H
+    MOV DRAW_TRANS_COLOR, 48
     RET
 GII_CHK2:
+    CMP AL, 2
+    JNE GII_CHK3
     LEA SI, IMG2_DATA
     MOV BX, IMG2_W
     MOV DX, IMG2_H
+    MOV DRAW_TRANS_COLOR, 48
+    RET
+GII_CHK3:
+    CMP AL, 3
+    JNE GII_CHK4
+    LEA SI, IMG3_DATA
+    MOV BX, IMG3_W
+    MOV DX, IMG3_H
+    MOV DRAW_TRANS_COLOR, 0
+    RET
+GII_CHK4:
+    LEA SI, IMG4_DATA
+    MOV BX, IMG4_W
+    MOV DX, IMG4_H
+    MOV DRAW_TRANS_COLOR, 0
     RET
 GET_IMG_INFO ENDP
 
@@ -3468,6 +3656,8 @@ DTI_CALC_READY:
     ; Leer pixel de la matriz
     MOV AL, [SI]
     CMP AL, 48              ; 48 representa color transparente en Lab 6
+    JE  DTI_NEXT_TX
+    CMP AL, DRAW_TRANS_COLOR ; Transparencia especifica (ej. 0 en personajes)
     JE  DTI_NEXT_TX
 
     ; Escribir pixel directamente en memoria de video 0A000h
